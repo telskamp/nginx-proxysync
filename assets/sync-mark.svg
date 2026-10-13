@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Configuration sync mark</title>
+  <rect width="128" height="128" rx="26" fill="#111111"/>
+  <g fill="none" stroke="#f5c400" stroke-linecap="round" stroke-linejoin="round" stroke-width="8">
+    <rect x="22" y="28" width="31" height="24" rx="5"/>
+    <rect x="75" y="76" width="31" height="24" rx="5"/>
+    <path d="M54 40h27l-9-9m9 9-9 9"/>
+    <path d="M74 88H47l9-9m-9 9 9 9"/>
+  </g>
+</svg>

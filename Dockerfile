@@ -8,6 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY nginx_proxysync ./nginx_proxysync
+COPY assets ./assets
 RUN mkdir -p /data && chown 10001:10001 /data
 USER 10001:10001
 EXPOSE 8080

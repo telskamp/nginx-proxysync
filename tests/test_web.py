@@ -99,6 +99,7 @@ class WebTests(unittest.TestCase):
         self.assertIn("Sync NPM settings", page)
         self.assertIn("Bidirectional", page)
         self.assertIn("Enable recurring sync", page)
+        self.assertIn("data:image/svg+xml;base64,", page)
         response, _ = self.request(
             restarted_app,
             authorization=self.basic_auth(password="wrong-password"),
@@ -290,6 +291,7 @@ class WebTests(unittest.TestCase):
             bidirectional_runner=runner,
             scheduler_poll_interval=0.01,
         )
+        self.addCleanup(app.stop_scheduler)
         self.create_admin(app)
         auth = self.basic_auth()
         _, page = self.request(app, authorization=auth)

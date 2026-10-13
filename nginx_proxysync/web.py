@@ -11,6 +11,7 @@ import secrets
 import threading
 import time
 import uuid
+from base64 import b64encode
 from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlsplit
@@ -20,16 +21,20 @@ from .sync import synchronize, synchronize_bidirectional
 
 
 def _page(body: str) -> bytes:
+    logo = b64encode(LOGO_FILE.read_bytes()).decode("ascii")
     return (
         "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">"
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         "<title>NPM Sync</title><style>"
         "body{font:16px system-ui;max-width:760px;margin:3rem auto;padding:0 1rem;color:#202b35}"
+        "header{display:flex;align-items:center;gap:1rem}header img{width:64px;height:64px}"
         "label{display:block;margin:.8rem 0}input[type=url],input[type=text],input[type=password]"
         "{box-sizing:border-box;width:100%;padding:.55rem}fieldset{margin:1rem 0;padding:1rem}"
         "button{padding:.65rem 1rem;margin:.5rem .5rem .5rem 0}pre{white-space:pre-wrap;"
         "background:#f3f5f7;padding:1rem}small{color:#52606d}"
-        "</style><body><h1>Nginx Proxy Manager Sync</h1>"
+        "</style><body><header>"
+        f'<img src="data:image/svg+xml;base64,{logo}" alt="">'
+        "<h1>Nginx Proxy Manager Sync</h1></header>"
         f"{body}</body></html>"
     ).encode()
 
@@ -37,6 +42,7 @@ def _page(body: str) -> bytes:
 PASSWORD_ITERATIONS = 600_000
 ADMIN_FILE = "admin.json"
 SCHEDULE_FILE = "schedule.json"
+LOGO_FILE = Path(__file__).resolve().parent.parent / "assets" / "sync-mark.svg"
 
 
 def _write_private_json(path: Path, value: dict) -> None:
@@ -174,6 +180,7 @@ def create_app(
     schedule_lock = threading.Lock()
     run_lock = threading.Lock()
     scheduler_wakeup = threading.Event()
+    scheduler_stop = threading.Event()
 
     def execute(configuration: dict, dry_run: bool = False):
         source, destination = _sync_clients(configuration)
@@ -190,9 +197,11 @@ def create_app(
         )
 
     def scheduled_sync_loop() -> None:
-        while True:
+        while not scheduler_stop.is_set():
             scheduler_wakeup.wait(scheduler_poll_interval)
             scheduler_wakeup.clear()
+            if scheduler_stop.is_set():
+                break
             try:
                 with schedule_lock:
                     configuration = _read_schedule(schedule_file)
@@ -514,6 +523,7 @@ def create_app(
         start_response("200 OK", [("Content-Type", "text/html; charset=utf-8")])
         return [_page(body)]
 
+    application.stop_scheduler = scheduler_stop.set
     return application
 
 

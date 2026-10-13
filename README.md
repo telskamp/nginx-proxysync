@@ -1,10 +1,26 @@
 # Nginx Proxy Manager Sync
 
-A Dockerized web app for previewing and applying configuration from one Nginx Proxy Manager (NPM) instance to another. It transfers supported proxy hosts, access lists, certificates/provider settings, and shared NPM settings. It preserves destination-only records and does not save source/destination NPM credentials.
+![Generic black-and-yellow configuration sync logo](assets/sync-mark.svg)
+
+A self-hosted Docker web app for previewing, applying, scheduling, and bidirectionally syncing supported configuration between Nginx Proxy Manager (NPM) instances. The interface is protected by a local admin account created on first use.
+
+## What it does
+
+- **One-way sync:** copy supported items from the source instance to the destination. Existing matching proxy hosts and IP-only access lists are updated; destination-only items are preserved.
+- **Bidirectional sync:** copy missing supported items in both directions. Matching proxy hosts, IP-only access lists, or shared settings that differ are reported as conflicts and left unchanged on both sides; the app does not guess which edit is newer.
+- **Preview and apply:** preview is read-only. Apply rereads current NPM state and then creates or updates the selected records. Scheduled runs apply automatically without a preview.
+- **Proxy hosts:** copy domain names, forwarding, SSL, locations, access-list references, and supported advanced options, remapping NPM IDs between instances.
+- **Certificates:** reuse a matching destination certificate or create a supported Let’s Encrypt/custom certificate and remap host references. DNS challenge provider settings and credentials can be transferred for new certificate requests.
+- **Access lists:** sync IP allow/deny lists and remap host/location references. Lists with username/password entries are skipped because NPM masks passwords in API responses.
+- **NPM settings:** sync settings shared by ID. In bidirectional mode, divergent shared values are conflicts and are not changed.
+- **Recurring schedule:** configure a run interval from 5 minutes to 7 days and review the latest run result in the UI. The first run occurs after the selected interval.
+- **Secret handling:** manual NPM credentials are request-only. Scheduled credentials are persisted only when a schedule is explicitly enabled; details are in [Credential storage and security](#credential-storage-and-security).
+
+This tool does not synchronize every NPM database entity. Check the [supported scope and limitations](#supported-scope-and-limitations) before using it with production instances.
 
 ## Install on CachyOS
 
-Open a terminal and install Docker and Docker Compose:
+Install Docker and Compose:
 
 ```sh
 sudo pacman -Syu docker docker-compose
@@ -12,7 +28,7 @@ sudo systemctl enable --now docker
 sudo docker info
 ```
 
-The last command should display Docker server information. Clone this app and start it:
+Clone the repository and start the app:
 
 ```sh
 git clone https://github.com/telskamp/nginx-proxysync.git
@@ -22,13 +38,13 @@ sudo docker compose up -d --build
 sudo docker compose ps
 ```
 
-Now open <http://127.0.0.1:8080> in your browser. On first run, click **Create the admin account**, choose a username and a password at least 12 characters long, and submit the form. Then sign in with the account you just created.
+Open <http://127.0.0.1:8080>. On first use, choose **Create the admin account**, then create a username and password of at least 12 characters. Sign in with that account afterward.
 
-To stop the app, run `sudo docker compose down` from the `nginx-proxysync` directory. To start it again later, run `sudo docker compose up -d`. Keep the Docker volume when updating; it stores the admin account. Do not run `docker compose down -v` unless you intend to delete that account and reset setup.
+To stop the app, run `sudo docker compose down` in the project directory. Start it again with `sudo docker compose up -d`. Keep the `npm-sync-data` volume; it stores the admin account and optional schedule. Do not use `docker compose down -v` unless you intend to erase the volume and reset the app.
 
-The `sudo` prefix avoids changing CachyOS user-group permissions. Alternatively, you can add your user to the `docker` group, but membership in that group grants root-equivalent access; log out and back in after changing groups.
+The `sudo` prefix avoids changing CachyOS user-group permissions. Adding your user to the `docker` group grants root-equivalent access.
 
-## Install on other systems with Docker Compose
+## Install on other systems
 
 Install Docker Engine and the Docker Compose plugin, then run:
 
@@ -36,70 +52,58 @@ Install Docker Engine and the Docker Compose plugin, then run:
 git clone https://github.com/telskamp/nginx-proxysync.git
 cd nginx-proxysync
 cp .env.example .env
-```
-
-The optional `.env` setting controls which host interface publishes the UI:
-
-```dotenv
-NPM_SYNC_BIND_ADDRESS=127.0.0.1
-```
-
-Build and start:
-
-```sh
 docker compose up -d --build
 docker compose ps
 ```
 
-Open <http://127.0.0.1:8080>. On first use, the web interface asks you to create an admin username and password. Use a password of at least 12 characters. The account is stored in the persistent `npm-sync-data` Docker volume; its password is stored as a salted PBKDF2 hash, not plaintext. After setup, the browser asks you to sign in with the account you created. The setup page is disabled after the account is created.
+Open <http://127.0.0.1:8080>. The default host binding is localhost. Keep it local until initial admin setup is complete. To update later, pull the repository and rebuild with `docker compose up -d --build`. Stop with `docker compose down`; view logs with `docker compose logs`.
 
-The default host port is bound to localhost. Keep it that way until the first admin account is created; anyone who can reach the app before setup can claim the initial account. For remote access, set `NPM_SYNC_BIND_ADDRESS=0.0.0.0` and protect access with HTTPS, firewall rules, and a trusted reverse proxy. Do not expose the app over plain HTTP on an untrusted network: Basic Auth and form submissions are not encrypted without TLS.
-
-To update, pull the latest source and run `docker compose up -d --build`. To stop it, run `docker compose down`. View service output with `docker compose logs`.
+For remote access, configure HTTPS through a trusted reverse proxy, firewall the service, and then set `NPM_SYNC_BIND_ADDRESS=0.0.0.0` in `.env`. Do not expose the web app over plain HTTP on an untrusted network: Basic Auth and form submissions are not encrypted without TLS.
 
 ## Use the web interface
 
-1. On first run, create the local administrator account in the setup page. On later visits, sign in with that account.
-2. Enter the source and destination NPM base URLs and account credentials. Use URLs such as `https://npm.example.test`, without `/api`, URL credentials, query strings, or fragments.
-3. Select proxy host, certificate, access-list, certificate-provider, and NPM setting sync options. Access-list sync includes IP allow/deny rules. Let's Encrypt DNS challenge provider IDs and credential configuration are copied with new certificates when enabled.
-4. Click **Preview changes** first. Preview performs reads only. Review planned, unchanged, skipped, and failed entries.
-5. Click **Apply changes** to re-read the current configurations and create or update supported records.
-6. Choose **One way** to copy from the source to the destination, or **Bidirectional** to copy items missing on either instance. Preview bidirectional changes before applying them.
-7. To run unattended, enable recurring sync, choose an interval from 5 minutes to 7 days, and save the schedule. A scheduled run applies changes automatically; the first run starts after the selected interval. Review the latest result on the settings page.
+1. Create the local admin account on first run and sign in.
+2. Enter the source and destination NPM base URLs, usernames, and passwords. Use a base URL such as `https://npm.example.test`; do not append `/api` or include URL credentials, query strings, or fragments.
+3. Choose **One way** or **Bidirectional**, and select which proxy host, certificate, access-list, certificate-provider, and shared-setting categories to sync.
+4. Click **Preview changes** and review planned, unchanged, skipped, and failed items. Preview makes no NPM writes.
+5. Click **Apply changes** to perform a manual sync. It reads the current NPM state again before writing.
+6. For unattended runs, enable recurring sync, select an interval between 5 minutes and 7 days, and save the schedule. Re-enter the NPM credentials when saving a schedule; the UI never fills or displays saved passwords. Scheduled runs apply changes automatically. The UI shows the mode, interval, latest result, or the latest error. Use **Disable schedule and remove saved credentials** to turn it off.
 
-Bidirectional mode creates missing supported records on the opposite instance. If a matching proxy host, IP-only access list, or shared setting differs on both sides, it reports a conflict and leaves that record unchanged on both instances. It does not infer which side was edited more recently. Destination-only records are retained in one-way mode too; deletions are never propagated.
+For bidirectional sync, missing items are created on the other instance. Divergent matching proxy hosts, IP-only access lists, and settings are reported as conflicts and remain untouched on both instances. Existing matching certificates are reused by provider and domain/name; their private key, provider credentials, and expiry are not compared or replaced.
 
-The administrator password is stored only as a salted password hash in the persistent app data volume. NPM passwords and API bearer tokens are not stored or shown in results. Certificate private keys are sent directly from source NPM to destination NPM when the source API returns them; result output does not contain certificate contents.
+## Credential storage and security
 
-Manual sync credentials are request-only. If recurring sync is enabled, the source/destination URLs, usernames, and passwords are saved in `/data/schedule.json` so the app can log in unattended. The file and containing data directory are restricted to owner-only permissions (`0600` and `0700`) but the credentials are **not encrypted**; protect the Docker host and volume backups accordingly. The UI never displays those saved passwords. Disable the schedule in the UI to remove the saved config, or remove/protect the volume as a whole. Do not run multiple app replicas against the same schedule volume.
+- The admin password is stored as a salted PBKDF2 hash in the persistent Docker volume, not as plaintext. Initial account setup is disabled once an account exists.
+- NPM credentials entered for a manual preview or apply are not saved by the app.
+- Enabling a schedule stores the two NPM URLs, usernames, and passwords plus selected sync options in `/data/schedule.json`. The file is written with owner-only permissions (`0600`) inside an owner-only data directory (`0700`), but **the credentials are not encrypted**. Protect the Docker host, volume, and backups accordingly.
+- The UI never displays stored NPM passwords. Disabling the schedule removes its configuration file and saved credentials.
+- API tokens are used for the request and not persisted. Certificate private keys and DNS provider credentials may be sent directly to destination NPM when required; they are not included in result summaries.
+- Use HTTPS to connect to NPM instances, use NPM accounts with only necessary permissions, and do not run multiple app replicas against the same schedule volume.
 
 ## Supported scope and limitations
 
-- Proxy hosts are matched using their normalized domain-name sets. Unmatched source hosts are created; matching hosts are updated.
-- Domain, forwarding, SSL, location, and advanced configuration fields are copied where exposed by the API.
-- Source certificates are reused at the destination by provider and domain names (or name when domains are unavailable). Otherwise, the app creates certificates through the NPM API if the source exposes the required provider settings or custom certificate PEM and private-key material. Proxy hosts are updated to use the corresponding destination certificate IDs.
-- Access lists containing username/password entries are skipped because NPM masks their passwords in API responses. IP allow/deny-only lists are synced and their IDs are remapped on proxy hosts. Hosts depending on a skipped access list are also skipped rather than pointed at the wrong destination list.
-- Let's Encrypt certificates are requested from the destination NPM using their source domains, key type, and (when enabled) DNS challenge provider configuration. This triggers certificate issuance/validation at the destination and can take time. The destination NPM account must be configured for certificate requests. Existing matching certificates are reused; provider credentials on an existing certificate are not compared or replaced. Custom certificates can be created when NPM returns their certificate and private-key PEM material.
-- NPM settings are synced by setting ID only when the setting exists at both instances. Destination-only settings are preserved; settings absent at the destination are reported and not created. Review the preview carefully, especially for the `default-site` value, which changes the destination's unknown-host response.
-- Destination-only proxy hosts and certificates are never deleted.
-- Redirection/dead hosts, streams, access lists with password-auth users, users, certificate renewal history, and arbitrary database state are not synced. Matching destination certificates are reused without comparing key material, provider credentials, or expiration. If private key material or required provider metadata is not available from the source API, the certificate and dependent proxy host are reported as skipped.
-- NPM API behavior varies by release. The implementation assumes `POST /api/tokens` with `identity` and `secret`, bearer-token authentication, and the `/api/nginx/proxy-hosts`, `/api/nginx/access-lists`, `/api/nginx/certificates`, and `/api/settings` APIs with expansions for access-list items/clients. DNS provider support is queried from `/api/nginx/certificates/dns-providers`. Test using your exact source and destination versions and check all errors/skips.
+- Proxy hosts are matched by normalized domain-name sets. Supported fields include domains, forwarding, SSL, location configuration, advanced configuration, and access-list/certificate references exposed by the NPM API.
+- IP allow/deny access lists are matched by name. Password-auth lists are skipped because NPM masks their passwords in API responses. A host or location that requires an unavailable list is skipped rather than pointed at an incorrect ID.
+- Certificates are matched by provider plus domain names (or name when domains are unavailable). Let’s Encrypt certificates are requested from destination NPM; DNS challenge configuration is included when enabled and the destination reports that provider as available. Issuance can take time and depends on DNS/domain validation and destination permissions. Custom certificates can be created only when the source API exposes certificate and private-key PEM material.
+- Shared NPM settings are matched by setting ID. Settings absent at the destination are reported and not created. Review `default-site` changes carefully because it affects the destination's unknown-host response.
+- Destination-only records are preserved; deletions are never propagated.
+- Redirection/dead hosts, streams, password-auth access lists, users, certificate renewal history, and arbitrary database state are not synchronized. Matching destination certificates are reused without checking key material, provider credentials, or expiration. If required certificate material or provider data is unavailable, the certificate and dependent host are reported as skipped.
+- NPM API behavior varies by version. The implementation assumes `POST /api/tokens` with `identity` and `secret`, bearer-token authentication, `/api/nginx/proxy-hosts`, `/api/nginx/access-lists`, `/api/nginx/certificates`, and `/api/settings`; access lists use `expand=items,clients`. DNS providers are queried at `/api/nginx/certificates/dns-providers`. Verify source and destination versions and review all skips/errors during preview and after applying.
+- Scheduled execution runs in this app process. It requires the container to remain running and the persistent data volume to be mounted. Restarts retain the saved schedule and resume it.
 
-Use NPM accounts with only the permissions required for the sync. API errors are sanitized and omit response bodies, passwords, certificates, and private keys.
+## Configuration and data
 
-## Settings
-
-Each manual run's URLs, NPM credentials, proxy-host, certificate, access-list, certificate-provider, and settings toggles, sync direction, and preview/apply action are entered in the web interface. Manual-run NPM credentials are not persisted. Enabling a recurring schedule is an explicit exception: its connection credentials and selected options are saved to `/data/schedule.json` for unattended runs, with owner-only filesystem permissions but without encryption. The admin password hash and schedule are stored in the `npm-sync-data` volume so they survive container replacement. Provider credentials from source certificate metadata are sent directly to the destination NPM API, never shown in output or logs; use HTTPS between instances.
-
-| Variable | Default | Purpose |
+| Setting | Default | Purpose |
 |---|---|---|
-| `NPM_SYNC_BIND_ADDRESS` | `127.0.0.1` | Host interface for the published port |
+| `NPM_SYNC_BIND_ADDRESS` | `127.0.0.1` | Host interface to which port 8080 is published |
+| Container port | `8080` | Web interface |
+| Docker volume | `npm-sync-data` mounted at `/data` | Admin account and optional schedule |
 
-The container web port is `8080`. The named volume is `npm-sync-data`, mounted at `/data` in the container. **Do not remove this volume when updating the app.** Removing it deletes the admin account and causes first-run setup to appear again. To reset the admin account deliberately, stop the stack and remove the named volume with `docker compose down -v`; this erases all app account data.
+The app has no third-party Python runtime dependencies. To intentionally reset the admin account and schedule, stop the stack and remove the volume with `docker compose down -v`; this erases all app data and returns it to first-run setup.
 
 ## Run tests without Docker
 
-Requires Python 3.10 or newer. No third-party runtime dependencies are needed.
+Requires Python 3.10 or newer:
 
 ```sh
 python -m unittest discover -s tests -v
