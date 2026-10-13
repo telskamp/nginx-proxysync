@@ -19,11 +19,20 @@ class WebTests(unittest.TestCase):
         self.addCleanup(self.temp_dir.cleanup)
         self.data_dir = self.temp_dir.name
 
-    def request(self, app, method="GET", path="/", body="", authorization=None):
+    def request(
+        self,
+        app,
+        method="GET",
+        path="/",
+        body="",
+        authorization=None,
+        query_string="",
+    ):
         captured = {}
         environ = {
             "REQUEST_METHOD": method,
             "PATH_INFO": path,
+            "QUERY_STRING": query_string,
             "CONTENT_LENGTH": str(len(body.encode())),
             "wsgi.input": io.BytesIO(body.encode()),
         }
@@ -160,7 +169,12 @@ class WebTests(unittest.TestCase):
                 {"dry_run": kwargs["dry_run"], "to_dict": lambda self: {"planned": []}},
             )()
 
-        app = create_app(self.data_dir, sync_runner=runner, start_scheduler=False)
+        app = create_app(
+            self.data_dir,
+            sync_runner=runner,
+            bidirectional_runner=runner,
+            start_scheduler=False,
+        )
         self.create_admin(app)
         auth = self.basic_auth()
         response, page = self.request(app, authorization=auth)
@@ -270,6 +284,140 @@ class WebTests(unittest.TestCase):
         self.assertIn("Saved NPM credentials were removed", result)
         self.assertFalse(os.path.exists(schedule_path))
 
+    def test_saved_connection_profiles_can_be_reused_updated_and_deleted(self):
+        calls = []
+
+        def runner(source, destination, **kwargs):
+            calls.append(kwargs)
+            return type(
+                "Result",
+                (),
+                {"dry_run": kwargs["dry_run"], "to_dict": lambda self: {"planned": []}},
+            )()
+
+        app = create_app(
+            self.data_dir,
+            sync_runner=runner,
+            bidirectional_runner=runner,
+            start_scheduler=False,
+        )
+        self.create_admin(app)
+        auth = self.basic_auth()
+        _, page = self.request(app, authorization=auth)
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+
+        profile_fields = {
+            "csrf": csrf,
+            "action": "save_profile",
+            "profile_name": "Home to VPS",
+            "source_url": "https://home.example",
+            "source_user": "home-admin",
+            "source_password": "home-secret",
+            "destination_url": "https://vps.example",
+            "destination_user": "vps-admin",
+            "destination_password": "vps-secret",
+            "sync_direction": "bidirectional",
+            "sync_hosts": "yes",
+            "sync_certificates": "yes",
+            "sync_access_lists": "yes",
+            "sync_certificate_providers": "yes",
+            "sync_settings": "yes",
+        }
+        response, result = self.request(
+            app,
+            "POST",
+            body=urlencode(profile_fields),
+            authorization=auth,
+        )
+        self.assertEqual(response["status"], "200 OK")
+        self.assertNotIn("home-secret", result)
+        self.assertNotIn("vps-secret", result)
+
+        profiles_path = os.path.join(self.data_dir, "profiles.json")
+        self.assertEqual(os.stat(profiles_path).st_mode & 0o777, 0o600)
+        with open(profiles_path, encoding="utf-8") as profiles_file:
+            profiles = json.load(profiles_file)["profiles"]
+        profile = profiles[0]
+        self.assertEqual(profile["name"], "Home to VPS")
+        self.assertEqual(profile["source_password"], "home-secret")
+        profile_id = profile["id"]
+
+        response, page = self.request(
+            app,
+            authorization=auth,
+            query_string=f"profile={profile_id}",
+        )
+        self.assertEqual(response["status"], "200 OK")
+        self.assertIn("home.example", page)
+        self.assertIn("home-admin", page)
+        self.assertNotIn("home-secret", page)
+
+        sync_fields = {
+            "csrf": csrf,
+            "action": "preview",
+            "profile_id": profile_id,
+            "source_url": "https://home.example",
+            "source_user": "home-admin",
+            "destination_url": "https://vps.example",
+            "destination_user": "vps-admin",
+            "sync_direction": "bidirectional",
+        }
+        with patch("nginx_proxysync.web.NpmClient") as npm_client:
+            npm_client.side_effect = ["source-client", "destination-client"]
+            response, result = self.request(
+                app,
+                "POST",
+                body=urlencode(sync_fields),
+                authorization=auth,
+            )
+        self.assertEqual(response["status"], "200 OK")
+        self.assertEqual(
+            [call.args for call in npm_client.call_args_list],
+            [
+                ("https://home.example", "home-admin", "home-secret"),
+                ("https://vps.example", "vps-admin", "vps-secret"),
+            ],
+        )
+        self.assertEqual(calls[0]["dry_run"], True)
+
+        update_fields = {
+            **profile_fields,
+            "action": "update_profile",
+            "profile_id": profile_id,
+            "profile_name": "Updated home connection",
+            "source_url": "https://new-home.example",
+            "source_password": "",
+            "destination_password": "",
+        }
+        response, _ = self.request(
+            app,
+            "POST",
+            body=urlencode(update_fields),
+            authorization=auth,
+        )
+        self.assertEqual(response["status"], "200 OK")
+        with open(profiles_path, encoding="utf-8") as profiles_file:
+            updated_profile = json.load(profiles_file)["profiles"][0]
+        self.assertEqual(updated_profile["name"], "Updated home connection")
+        self.assertEqual(updated_profile["source_url"], "https://new-home.example")
+        self.assertEqual(updated_profile["source_password"], "home-secret")
+        self.assertEqual(updated_profile["destination_password"], "vps-secret")
+
+        response, page = self.request(app, authorization=auth)
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+        response, result = self.request(
+            app,
+            "POST",
+            body=urlencode(
+                {"csrf": csrf, "action": "delete_profile", "profile_id": profile_id}
+            ),
+            authorization=auth,
+        )
+        self.assertEqual(response["status"], "200 OK")
+        self.assertNotIn("home-secret", result)
+        with open(profiles_path, encoding="utf-8") as profiles_file:
+            self.assertEqual(json.load(profiles_file)["profiles"], [])
+
     def test_due_schedule_runs_bidirectional_sync(self):
         called = threading.Event()
         invocations = []
@@ -289,7 +437,7 @@ class WebTests(unittest.TestCase):
             self.data_dir,
             sync_runner=runner,
             bidirectional_runner=runner,
-            scheduler_poll_interval=0.01,
+            scheduler_poll_interval=0.1,
         )
         self.addCleanup(app.stop_scheduler)
         self.create_admin(app)
@@ -317,8 +465,10 @@ class WebTests(unittest.TestCase):
         with open(schedule_path, encoding="utf-8") as schedule_file:
             schedule = json.load(schedule_file)
         schedule["next_run_at"] = 0
-        with open(schedule_path, "w", encoding="utf-8") as schedule_file:
+        temporary_schedule_path = f"{schedule_path}.test"
+        with open(temporary_schedule_path, "w", encoding="utf-8") as schedule_file:
             json.dump(schedule, schedule_file)
+        os.replace(temporary_schedule_path, schedule_path)
 
         with patch(
             "nginx_proxysync.web.NpmClient",

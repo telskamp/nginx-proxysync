@@ -14,7 +14,8 @@ A self-hosted Docker web app for previewing, applying, scheduling, and bidirecti
 - **Access lists:** sync IP allow/deny lists and remap host/location references. Lists with username/password entries are skipped because NPM masks passwords in API responses.
 - **NPM settings:** sync settings shared by ID. In bidirectional mode, divergent shared values are conflicts and are not changed.
 - **Recurring schedule:** configure a run interval from 5 minutes to 7 days and review the latest run result in the UI. The first run occurs after the selected interval.
-- **Secret handling:** manual NPM credentials are request-only. Scheduled credentials are persisted only when a schedule is explicitly enabled; details are in [Credential storage and security](#credential-storage-and-security).
+- **Saved connections:** name and save multiple source/destination NPM pairs, load a saved pair for quick sync, update its URLs or usernames, and delete profiles you no longer need.
+- **Secret handling:** manual NPM credentials are request-only. Saved profiles and scheduled runs retain credentials only when you explicitly save them; details are in [Credential storage and security](#credential-storage-and-security).
 
 This tool does not synchronize every NPM database entity. Check the [supported scope and limitations](#supported-scope-and-limitations) before using it with production instances.
 
@@ -40,7 +41,7 @@ sudo docker compose ps
 
 Open <http://127.0.0.1:8080>. On first use, choose **Create the admin account**, then create a username and password of at least 12 characters. Sign in with that account afterward.
 
-To stop the app, run `sudo docker compose down` in the project directory. Start it again with `sudo docker compose up -d`. Keep the `npm-sync-data` volume; it stores the admin account and optional schedule. Do not use `docker compose down -v` unless you intend to erase the volume and reset the app.
+To stop the app, run `sudo docker compose down` in the project directory. Start it again with `sudo docker compose up -d`. Keep the `npm-sync-data` volume; it stores the admin account, saved connection profiles, and optional schedule. Do not use `docker compose down -v` unless you intend to erase the volume and reset the app.
 
 The `sudo` prefix avoids changing CachyOS user-group permissions. Adding your user to the `docker` group grants root-equivalent access.
 
@@ -63,11 +64,12 @@ For remote access, configure HTTPS through a trusted reverse proxy, firewall the
 ## Use the web interface
 
 1. Create the local admin account on first run and sign in.
-2. Enter the source and destination NPM base URLs, usernames, and passwords. Use a base URL such as `https://npm.example.test`; do not append `/api` or include URL credentials, query strings, or fragments.
-3. Choose **One way** or **Bidirectional**, and select which proxy host, certificate, access-list, certificate-provider, and shared-setting categories to sync.
-4. Click **Preview changes** and review planned, unchanged, skipped, and failed items. Preview makes no NPM writes.
-5. Click **Apply changes** to perform a manual sync. It reads the current NPM state again before writing.
-6. For unattended runs, enable recurring sync, select an interval between 5 minutes and 7 days, and save the schedule. Re-enter the NPM credentials when saving a schedule; the UI never fills or displays saved passwords. Scheduled runs apply changes automatically. The UI shows the mode, interval, latest result, or the latest error. Use **Disable schedule and remove saved credentials** to turn it off.
+2. Either enter source and destination NPM base URLs, usernames, and passwords, or choose a saved connection and click **Load connection**. Use base URLs such as `https://npm.example.test`; do not append `/api` or include URL credentials, query strings, or fragments.
+3. To save a new pair, enter a profile name and connection details, then choose **Save new connection**. Select an existing profile to edit its URLs, usernames, sync direction, or category options and choose **Update selected connection**. Leave a password field blank to keep that profile's saved password; a newly saved profile requires both passwords. Choose **Delete selected connection** to remove a profile and its credentials.
+4. Choose **One way** or **Bidirectional**, and select which proxy host, certificate, access-list, certificate-provider, and shared-setting categories to sync.
+5. Click **Preview changes** and review planned, unchanged, skipped, and failed items. Preview makes no NPM writes.
+6. Click **Apply changes** to perform a manual sync. It reads the current NPM state again before writing.
+7. For unattended runs, enable recurring sync, select an interval between 5 minutes and 7 days, and save the schedule. Scheduled runs apply changes automatically. The UI shows the mode, interval, latest result, or latest error. Use **Disable schedule and remove saved credentials** to turn it off.
 
 For bidirectional sync, missing items are created on the other instance. Divergent matching proxy hosts, IP-only access lists, and settings are reported as conflicts and remain untouched on both instances. Existing matching certificates are reused by provider and domain/name; their private key, provider credentials, and expiry are not compared or replaced.
 
@@ -75,8 +77,10 @@ For bidirectional sync, missing items are created on the other instance. Diverge
 
 - The admin password is stored as a salted PBKDF2 hash in the persistent Docker volume, not as plaintext. Initial account setup is disabled once an account exists.
 - NPM credentials entered for a manual preview or apply are not saved by the app.
+- Saved connection profiles persist the NPM URLs, usernames, passwords, sync direction, and category options in `/data/profiles.json`. Passwords are not displayed in the UI. Leave a password blank while editing a profile to keep its saved value.
 - Enabling a schedule stores the two NPM URLs, usernames, and passwords plus selected sync options in `/data/schedule.json`. The file is written with owner-only permissions (`0600`) inside an owner-only data directory (`0700`), but **the credentials are not encrypted**. Protect the Docker host, volume, and backups accordingly.
-- The UI never displays stored NPM passwords. Disabling the schedule removes its configuration file and saved credentials.
+- Profile and schedule files are written with owner-only permissions (`0600`) inside an owner-only data directory (`0700`), but **saved NPM credentials are not encrypted**. Protect the Docker host, volume, and backups accordingly.
+- The UI never displays stored NPM passwords. Deleting a profile removes its saved credentials; disabling the schedule removes its saved configuration.
 - API tokens are used for the request and not persisted. Certificate private keys and DNS provider credentials may be sent directly to destination NPM when required; they are not included in result summaries.
 - Use HTTPS to connect to NPM instances, use NPM accounts with only necessary permissions, and do not run multiple app replicas against the same schedule volume.
 
@@ -97,7 +101,7 @@ For bidirectional sync, missing items are created on the other instance. Diverge
 |---|---|---|
 | `NPM_SYNC_BIND_ADDRESS` | `127.0.0.1` | Host interface to which port 8080 is published |
 | Container port | `8080` | Web interface |
-| Docker volume | `npm-sync-data` mounted at `/data` | Admin account and optional schedule |
+| Docker volume | `npm-sync-data` mounted at `/data` | Admin account, saved connections, and optional schedule |
 
 The app has no third-party Python runtime dependencies. To intentionally reset the admin account and schedule, stop the stack and remove the volume with `docker compose down -v`; this erases all app data and returns it to first-run setup.
 

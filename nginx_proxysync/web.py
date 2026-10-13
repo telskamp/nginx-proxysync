@@ -42,6 +42,7 @@ def _page(body: str) -> bytes:
 PASSWORD_ITERATIONS = 600_000
 ADMIN_FILE = "admin.json"
 SCHEDULE_FILE = "schedule.json"
+PROFILES_FILE = "profiles.json"
 LOGO_FILE = Path(__file__).resolve().parent.parent / "assets" / "sync-mark.svg"
 
 
@@ -75,6 +76,24 @@ def _read_schedule(path: Path) -> dict | None:
     if not isinstance(configuration, dict):
         raise ValueError("Saved schedule has an invalid format")
     return configuration
+
+
+def _read_profiles(path: Path) -> list[dict]:
+    try:
+        with path.open(encoding="utf-8") as profiles_file:
+            profiles = json.load(profiles_file)
+    except FileNotFoundError:
+        return []
+    if isinstance(profiles, dict):
+        profiles = profiles.get("profiles")
+    if not isinstance(profiles, list) or any(
+        not isinstance(profile, dict)
+        or not isinstance(profile.get("id"), str)
+        or not isinstance(profile.get("name"), str)
+        for profile in profiles
+    ):
+        raise ValueError("Saved connection profiles have an invalid format")
+    return profiles
 
 
 def _sync_options(configuration: dict) -> dict[str, bool]:
@@ -176,8 +195,10 @@ def create_app(
     data_path = Path(data_dir)
     admin_file = data_path / ADMIN_FILE
     schedule_file = data_path / SCHEDULE_FILE
+    profiles_file = data_path / PROFILES_FILE
     csrf_token = secrets.token_urlsafe(32)
     schedule_lock = threading.Lock()
+    profiles_lock = threading.Lock()
     run_lock = threading.Lock()
     scheduler_wakeup = threading.Event()
     scheduler_stop = threading.Event()
@@ -354,9 +375,31 @@ def create_app(
         if method == "GET":
             try:
                 schedule = _read_schedule(schedule_file)
+                with profiles_lock:
+                    profiles = _read_profiles(profiles_file)
             except (OSError, ValueError, json.JSONDecodeError):
                 start_response("500 Internal Server Error", [("Content-Type", "text/plain; charset=utf-8")])
-                return [b"Could not read the saved schedule. Check the persistent data volume."]
+                return [b"Could not read saved app settings. Check the persistent data volume."]
+            selected_profile_id = parse_qs(environ.get("QUERY_STRING", "")).get("profile", [""])[0]
+            selected_profile = next(
+                (profile for profile in profiles if profile["id"] == selected_profile_id),
+                None,
+            )
+            profile_options = "".join(
+                '<option value="{}"{}>{}</option>'.format(
+                    html.escape(profile["id"], quote=True),
+                    " selected" if profile is selected_profile else "",
+                    html.escape(profile["name"]),
+                )
+                for profile in profiles
+            )
+            profile_selector = (
+                '<form method="get"><fieldset><legend>Saved connections</legend>'
+                '<label>Select a saved connection <select name="profile">'
+                '<option value="">Manual connection</option>'
+                f"{profile_options}</select></label>"
+                '<button type="submit">Load connection</button></fieldset></form>'
+            )
             schedule_status = (
                 "<p><strong>Scheduled sync is enabled.</strong> "
                 f"Runs every {schedule.get('interval_minutes')} minutes. "
@@ -365,13 +408,29 @@ def create_app(
                 if schedule
                 else "<p>No scheduled sync is enabled.</p>"
             )
-            schedule_options = schedule or {}
+            schedule_options = selected_profile or schedule or {}
             sync_hosts_checked = schedule_options.get("sync_hosts", True)
             sync_certificates_checked = schedule_options.get("sync_certificates", True)
             sync_access_lists_checked = schedule_options.get("sync_access_lists", True)
             sync_providers_checked = schedule_options.get("sync_certificate_providers", True)
             sync_settings_checked = schedule_options.get("sync_settings", True)
             direction = schedule_options.get("sync_direction", "one_way")
+            source_url = html.escape(
+                (selected_profile or {}).get("source_url", ""),
+                quote=True,
+            )
+            source_user = html.escape(
+                (selected_profile or {}).get("source_user", ""),
+                quote=True,
+            )
+            destination_url = html.escape(
+                (selected_profile or {}).get("destination_url", ""),
+                quote=True,
+            )
+            destination_user = html.escape(
+                (selected_profile or {}).get("destination_user", ""),
+                quote=True,
+            )
             if schedule and schedule.get("last_error"):
                 schedule_status += f"<p>Last scheduled run failed: {html.escape(schedule['last_error'])}</p>"
             if schedule and schedule.get("last_result"):
@@ -382,15 +441,28 @@ def create_app(
             body = (
                 "<p>Preview first. Credentials entered for a manual run are not saved. "
                 "Enabling unattended scheduling stores them in the protected persistent volume.</p>"
+                f"{profile_selector}"
                 f'<form method="post"><input type="hidden" name="csrf" value="{csrf_token}">'
+                f'<input type="hidden" name="profile_id" value="{html.escape(selected_profile_id, quote=True)}">'
                 "<fieldset><legend>Source instance</legend>"
-                '<label>URL <input name="source_url" type="url" placeholder="https://npm-source.example" required></label>'
-                '<label>Username <input name="source_user" type="text" required></label>'
-                '<label>Password <input name="source_password" type="password" required></label></fieldset>'
+                f'<label>URL <input name="source_url" type="url" value="{source_url}" placeholder="https://npm-source.example" required></label>'
+                f'<label>Username <input name="source_user" type="text" value="{source_user}" required></label>'
+                '<label>Password <input name="source_password" type="password" placeholder="Blank uses saved password" '
+                f'{"required" if selected_profile is None else ""}></label></fieldset>'
                 "<fieldset><legend>Destination instance</legend>"
-                '<label>URL <input name="destination_url" type="url" placeholder="https://npm-destination.example" required></label>'
-                '<label>Username <input name="destination_user" type="text" required></label>'
-                '<label>Password <input name="destination_password" type="password" required></label></fieldset>'
+                f'<label>URL <input name="destination_url" type="url" value="{destination_url}" placeholder="https://npm-destination.example" required></label>'
+                f'<label>Username <input name="destination_user" type="text" value="{destination_user}" required></label>'
+                '<label>Password <input name="destination_password" type="password" placeholder="Blank uses saved password" '
+                f'{"required" if selected_profile is None else ""}></label></fieldset>'
+                "<fieldset><legend>Manage connection</legend>"
+                f'<label>Profile name <input name="profile_name" type="text" maxlength="64" '
+                f'value="{html.escape(selected_profile["name"], quote=True) if selected_profile else ""}" '
+                'placeholder="Home NPM to VPS" required></label>'
+                '<button name="action" value="save_profile">Save new connection</button>'
+                '<button name="action" value="update_profile">Update selected connection</button>'
+                '<button name="action" value="delete_profile" formnovalidate '
+                'onclick="return confirm(\'Delete this saved connection?\')">Delete selected connection</button>'
+                "</fieldset>"
                 "<fieldset><legend>Sync settings</legend>"
                 f'<label><input type="checkbox" name="sync_hosts" value="yes"{" checked" if sync_hosts_checked else ""}> '
                 "Sync proxy hosts (create or update by domain)</label>"
@@ -441,10 +513,30 @@ def create_app(
             start_response("403 Forbidden", [("Content-Type", "text/plain; charset=utf-8")])
             return [b"Invalid request token"]
         action = values.get("action")
-        if action not in {"preview", "apply", "save_schedule", "disable_schedule"}:
+        if action not in {
+            "preview",
+            "apply",
+            "save_schedule",
+            "disable_schedule",
+            "save_profile",
+            "update_profile",
+            "delete_profile",
+        }:
             start_response("400 Bad Request", [("Content-Type", "text/plain; charset=utf-8")])
             return [b"Unknown action"]
 
+        try:
+            with profiles_lock:
+                profiles = _read_profiles(profiles_file)
+        except (OSError, ValueError, json.JSONDecodeError):
+            start_response("500 Internal Server Error", [("Content-Type", "text/plain; charset=utf-8")])
+            return [b"Could not read saved connections. Check the persistent data volume."]
+
+        profile_id = values.get("profile_id", "")
+        selected_profile = next(
+            (profile for profile in profiles if profile["id"] == profile_id),
+            None,
+        )
         configuration = {
             "source_url": values.get("source_url", ""),
             "source_user": values.get("source_user", ""),
@@ -464,6 +556,87 @@ def create_app(
                 )
             },
         }
+        if selected_profile:
+            for field_name in (
+                "source_url",
+                "source_user",
+                "source_password",
+                "destination_url",
+                "destination_user",
+                "destination_password",
+            ):
+                if not configuration[field_name]:
+                    configuration[field_name] = selected_profile.get(field_name, "")
+        if action in {"save_profile", "update_profile", "delete_profile"}:
+            if action == "delete_profile":
+                if selected_profile is None:
+                    return _error(start_response, "Select a saved connection before deleting it.")
+                with profiles_lock:
+                    profiles = [
+                        profile for profile in profiles
+                        if profile["id"] != selected_profile["id"]
+                    ]
+                    try:
+                        _write_private_json(profiles_file, {"profiles": profiles})
+                    except (OSError, TypeError, ValueError):
+                        start_response("500 Internal Server Error", [("Content-Type", "text/plain; charset=utf-8")])
+                        return [b"Could not delete the saved connection. Check the persistent data volume."]
+                # Profiles are stored as a JSON object so the file format remains extensible.
+                body = "<h2>Connection deleted</h2><p>The saved NPM credentials were removed.</p>"
+                body += '<p><a href="/">Back to connections</a></p>'
+                start_response("200 OK", [("Content-Type", "text/html; charset=utf-8")])
+                return [_page(body)]
+
+            profile_name = values.get("profile_name", "").strip()
+            if not 1 <= len(profile_name) <= 64:
+                return _error(start_response, "Profile name must be between 1 and 64 characters.")
+            if action == "update_profile" and selected_profile is None:
+                return _error(start_response, "Load a saved connection before updating it.")
+            if action == "save_profile" and any(
+                profile["name"].casefold() == profile_name.casefold()
+                for profile in profiles
+            ):
+                return _error(start_response, "A saved connection already uses that name.")
+            if action == "update_profile" and any(
+                profile["id"] != selected_profile["id"]
+                and profile["name"].casefold() == profile_name.casefold()
+                for profile in profiles
+            ):
+                return _error(start_response, "Another saved connection already uses that name.")
+            try:
+                _validate_schedule_config(configuration)
+                updated_profile = {
+                    **configuration,
+                    "id": (
+                        selected_profile["id"]
+                        if action == "update_profile"
+                        else uuid.uuid4().hex
+                    ),
+                    "name": profile_name,
+                }
+                with profiles_lock:
+                    if action == "update_profile":
+                        profiles = [
+                            updated_profile if profile["id"] == selected_profile["id"] else profile
+                            for profile in profiles
+                        ]
+                    else:
+                        profiles.append(updated_profile)
+                    _write_private_json(profiles_file, {"profiles": profiles})
+            except ValueError:
+                return _error(start_response, "Enter valid NPM URLs, usernames, and passwords for both instances.")
+            except OSError:
+                start_response("500 Internal Server Error", [("Content-Type", "text/plain; charset=utf-8")])
+                return [b"Could not save the connection. Check the persistent data volume."]
+            action_label = "updated" if action == "update_profile" else "saved"
+            body = (
+                f"<h2>Connection {action_label}</h2>"
+                f'<p>{html.escape(profile_name)} is ready to use.</p>'
+                f'<p><a href="/?profile={html.escape(updated_profile["id"], quote=True)}">Open connection</a></p>'
+            )
+            start_response("200 OK", [("Content-Type", "text/html; charset=utf-8")])
+            return [_page(body)]
+
         if configuration["sync_direction"] not in {"one_way", "bidirectional"}:
             start_response("400 Bad Request", [("Content-Type", "text/plain; charset=utf-8")])
             return [b"Unknown sync direction"]
