@@ -206,8 +206,15 @@ def create_app(data_dir: str | os.PathLike = "data", sync_runner: Callable = syn
                 "Sync proxy hosts (create or update by domain)</label>"
                 '<label><input type="checkbox" name="sync_certificates" value="yes" checked> '
                 "Transfer supported source certificates and remap host references</label>"
+                '<label><input type="checkbox" name="sync_access_lists" value="yes" checked> '
+                "Sync access lists and remap host references (lists with masked passwords are skipped)</label>"
+                '<label><input type="checkbox" name="sync_certificate_providers" value="yes" checked> '
+                "Sync supported certificate provider and DNS challenge settings (contains provider credentials)</label>"
+                '<label><input type="checkbox" name="sync_settings" value="yes" checked> '
+                "Sync NPM settings that exist on both instances</label>"
                 "<p>Preview is read-only. Apply re-reads the instances before writing. "
-                "Destination-only records are always preserved.</p></fieldset>"
+                "Destination-only records are always preserved. Provider credentials are sent directly "
+                "from source NPM to destination NPM and are not included in results.</p></fieldset>"
                 '<button name="action" value="preview">Preview changes</button>'
                 '<button name="action" value="apply">Apply changes</button></form>'
             )
@@ -247,6 +254,9 @@ def create_app(data_dir: str | os.PathLike = "data", sync_runner: Callable = syn
                 dry_run=action == "preview",
                 sync_hosts=values.get("sync_hosts") == "yes",
                 sync_certificates=values.get("sync_certificates") == "yes",
+                sync_access_lists=values.get("sync_access_lists") == "yes",
+                sync_certificate_providers=values.get("sync_certificate_providers") == "yes",
+                sync_settings=values.get("sync_settings") == "yes",
             )
             title = "Preview" if result.dry_run else "Sync result"
             body = f"<h2>{title}</h2><pre>{html.escape(json.dumps(result.to_dict(), indent=2))}</pre>"

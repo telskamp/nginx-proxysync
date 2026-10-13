@@ -1,6 +1,6 @@
 # Nginx Proxy Manager Sync
 
-A Dockerized web app for previewing and applying configuration from one Nginx Proxy Manager (NPM) instance to another. This initial version transfers supported proxy hosts and their certificates. It preserves destination-only records and does not save source/destination NPM credentials.
+A Dockerized web app for previewing and applying configuration from one Nginx Proxy Manager (NPM) instance to another. It transfers supported proxy hosts, access lists, certificates/provider settings, and shared NPM settings. It preserves destination-only records and does not save source/destination NPM credentials.
 
 ## Install on CachyOS
 
@@ -61,7 +61,7 @@ To update, pull the latest source and run `docker compose up -d --build`. To sto
 
 1. On first run, create the local administrator account in the setup page. On later visits, sign in with that account.
 2. Enter the source and destination NPM base URLs and account credentials. Use URLs such as `https://npm.example.test`, without `/api`, URL credentials, query strings, or fragments.
-3. Select proxy-host and certificate sync settings. Certificates are only processed along with proxy-host sync.
+3. Select proxy host, certificate, access-list, certificate-provider, and NPM setting sync options. Access-list sync includes IP allow/deny rules. Let's Encrypt DNS challenge provider IDs and credential configuration are copied with new certificates when enabled.
 4. Click **Preview changes** first. Preview performs reads only. Review planned, unchanged, skipped, and failed entries.
 5. Click **Apply changes** to re-read the current configurations and create or update supported records.
 
@@ -71,17 +71,19 @@ The administrator password is stored only as a salted password hash in the persi
 
 - Proxy hosts are matched using their normalized domain-name sets. Unmatched source hosts are created; matching hosts are updated.
 - Domain, forwarding, SSL, location, and advanced configuration fields are copied where exposed by the API.
-- Source certificates are reused at the destination by domain names (or name when domains are unavailable). Otherwise, the app attempts certificate upload if the source API returns certificate PEM and private-key material. Proxy hosts are updated to use the corresponding destination certificate IDs.
-- A proxy host using an access list is skipped. Access-list IDs are instance-specific, and access-list transfer is not implemented.
+- Source certificates are reused at the destination by provider and domain names (or name when domains are unavailable). Otherwise, the app creates certificates through the NPM API if the source exposes the required provider settings or custom certificate PEM and private-key material. Proxy hosts are updated to use the corresponding destination certificate IDs.
+- Access lists containing username/password entries are skipped because NPM masks their passwords in API responses. IP allow/deny-only lists are synced and their IDs are remapped on proxy hosts. Hosts depending on a skipped access list are also skipped rather than pointed at the wrong destination list.
+- Let's Encrypt certificates are requested from the destination NPM using their source domains, key type, and (when enabled) DNS challenge provider configuration. This triggers certificate issuance/validation at the destination and can take time. The destination NPM account must be configured for certificate requests. Existing matching certificates are reused; provider credentials on an existing certificate are not compared or replaced. Custom certificates can be created when NPM returns their certificate and private-key PEM material.
+- NPM settings are synced by setting ID only when the setting exists at both instances. Destination-only settings are preserved; settings absent at the destination are reported and not created. Review the preview carefully, especially for the `default-site` value, which changes the destination's unknown-host response.
 - Destination-only proxy hosts and certificates are never deleted.
-- Redirection/dead hosts, streams, access lists and their credentials, users, global settings, and arbitrary database state are not synced. Matching destination certificates are reused without comparing key material or expiration. If private key material is not available from the source API, the certificate and dependent proxy host are reported as skipped.
-- NPM API behavior varies by release. The implementation assumes `POST /api/tokens` with `identity` and `secret`, bearer-token authentication, `/api/nginx/proxy-hosts`, and `/api/nginx/certificates`. Certificate upload uses the multipart fields supported by commonly deployed NPM versions. Test using your exact source and destination versions and check all errors/skips.
+- Redirection/dead hosts, streams, access lists with password-auth users, users, certificate renewal history, and arbitrary database state are not synced. Matching destination certificates are reused without comparing key material, provider credentials, or expiration. If private key material or required provider metadata is not available from the source API, the certificate and dependent proxy host are reported as skipped.
+- NPM API behavior varies by release. The implementation assumes `POST /api/tokens` with `identity` and `secret`, bearer-token authentication, and the `/api/nginx/proxy-hosts`, `/api/nginx/access-lists`, `/api/nginx/certificates`, and `/api/settings` APIs with expansions for access-list items/clients. DNS provider support is queried from `/api/nginx/certificates/dns-providers`. Test using your exact source and destination versions and check all errors/skips.
 
 Use NPM accounts with only the permissions required for the sync. API errors are sanitized and omit response bodies, passwords, certificates, and private keys.
 
 ## Settings
 
-Each run's URLs, NPM credentials, proxy-host toggle, certificate toggle, and preview/apply action are entered in the web interface. NPM credentials are intentionally not persisted. The admin password hash is stored in the `npm-sync-data` volume so it survives container replacement.
+Each run's URLs, NPM credentials, proxy-host, certificate, access-list, certificate-provider, and settings toggles, and preview/apply action are entered in the web interface. NPM credentials are intentionally not persisted. The admin password hash is stored in the `npm-sync-data` volume so it survives container replacement. Provider credentials from source certificate metadata are sent directly to the destination NPM API, never shown in output or logs; use HTTPS between instances.
 
 | Variable | Default | Purpose |
 |---|---|---|

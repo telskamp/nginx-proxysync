@@ -92,6 +92,9 @@ class WebTests(unittest.TestCase):
         response, page = self.request(restarted_app, authorization=self.basic_auth())
         self.assertEqual(response["status"], "200 OK")
         self.assertIn("Sync proxy hosts", page)
+        self.assertIn("Sync access lists", page)
+        self.assertIn("certificate provider and DNS challenge settings", page)
+        self.assertIn("Sync NPM settings", page)
         response, _ = self.request(
             restarted_app,
             authorization=self.basic_auth(password="wrong-password"),
@@ -170,6 +173,9 @@ class WebTests(unittest.TestCase):
                 "destination_password": "dest-secret",
                 "sync_hosts": "yes",
                 "sync_certificates": "yes",
+                "sync_access_lists": "yes",
+                "sync_certificate_providers": "yes",
+                "sync_settings": "yes",
             }
         )
         with patch(
@@ -182,7 +188,16 @@ class WebTests(unittest.TestCase):
         self.assertNotIn("source-secret", result)
         self.assertEqual(
             calls,
-            [{"dry_run": True, "sync_hosts": True, "sync_certificates": True}],
+            [
+                {
+                    "dry_run": True,
+                    "sync_hosts": True,
+                    "sync_certificates": True,
+                    "sync_access_lists": True,
+                    "sync_certificate_providers": True,
+                    "sync_settings": True,
+                }
+            ],
         )
 
         response, _ = self.request(app, authorization=None)

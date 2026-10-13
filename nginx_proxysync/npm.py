@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -41,6 +40,7 @@ class NpmClient:
         *,
         data: bytes | None = None,
         content_type: str = "application/json",
+        timeout: int | None = None,
     ) -> Any:
         headers = {"Accept": "application/json"}
         if self.token:
@@ -54,7 +54,7 @@ class NpmClient:
             method=method,
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=timeout or self.timeout) as response:
                 body = response.read()
         except urllib.error.HTTPError as exc:
             raise NpmApiError(f"NPM returned HTTP {exc.code} for {method} {path}") from None
@@ -70,37 +70,8 @@ class NpmClient:
     def get(self, path: str) -> Any:
         return self._request("GET", path)
 
-    def post(self, path: str, value: dict[str, Any]) -> Any:
-        return self._request("POST", path, data=json.dumps(value).encode())
+    def post(self, path: str, value: dict[str, Any], *, timeout: int | None = None) -> Any:
+        return self._request("POST", path, data=json.dumps(value).encode(), timeout=timeout)
 
     def put(self, path: str, value: dict[str, Any]) -> Any:
         return self._request("PUT", path, data=json.dumps(value).encode())
-
-    def upload_certificate(self, value: dict[str, Any]) -> Any:
-        boundary = f"----npm-sync-{secrets.token_hex(16)}"
-        fields = {
-            "name": value.get("nice_name", ""),
-            "provider": value.get("provider", "other"),
-            "meta": json.dumps(value.get("meta") or {}),
-            "certificate": value["certificate"],
-            "certificate_key": value["certificate_key"],
-        }
-        if value.get("intermediate_certificate"):
-            fields["intermediate_certificate"] = value["intermediate_certificate"]
-        chunks: list[bytes] = []
-        for name, field_value in fields.items():
-            chunks.extend(
-                (
-                    f"--{boundary}\r\n".encode(),
-                    f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
-                    str(field_value).encode(),
-                    b"\r\n",
-                )
-            )
-        chunks.append(f"--{boundary}--\r\n".encode())
-        return self._request(
-            "POST",
-            "nginx/certificates",
-            data=b"".join(chunks),
-            content_type=f"multipart/form-data; boundary={boundary}",
-        )
