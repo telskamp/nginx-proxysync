@@ -1,6 +1,6 @@
 import unittest
 
-from nginx_proxysync.sync import synchronize
+from nginx_proxysync.sync import synchronize, synchronize_bidirectional
 
 
 class FakeNpm:
@@ -58,6 +58,80 @@ def host(domains, **extra):
 
 
 class SyncTests(unittest.TestCase):
+    def test_bidirectional_conflicts_preserve_access_lists_and_settings(self):
+        source = FakeNpm(
+            hosts=[host(["private.example"], access_list_id=1)],
+            access_lists=[
+                {
+                    "id": 1,
+                    "name": "trusted",
+                    "items": [],
+                    "clients": [{"address": "10.0.0.0/8", "directive": "allow"}],
+                }
+            ],
+            settings=[{"id": "default-site", "value": "404", "meta": {}}],
+        )
+        destination = FakeNpm(
+            access_lists=[
+                {
+                    "id": 2,
+                    "name": "trusted",
+                    "items": [],
+                    "clients": [{"address": "192.168.0.0/16", "directive": "allow"}],
+                }
+            ],
+            settings=[{"id": "default-site", "value": "html", "meta": {}}],
+        )
+
+        result = synchronize(
+            source,
+            destination,
+            dry_run=False,
+            sync_certificates=False,
+            conflict_on_difference=True,
+        )
+
+        self.assertTrue(any("Access list trusted: conflicting changes" in item for item in result.skipped))
+        self.assertTrue(any("Setting default-site: conflicting changes" in item for item in result.skipped))
+        self.assertTrue(any("Proxy host private.example: access list trusted is unavailable" in item for item in result.skipped))
+        self.assertFalse(any(call[0] in {"POST", "PUT"} for call in destination.calls))
+
+    def test_bidirectional_copies_missing_hosts_and_preserves_divergent_matches(self):
+        left = FakeNpm(
+            hosts=[
+                host(["left-only.example"]),
+                host(["shared.example"], forward_host="left-app"),
+            ]
+        )
+        right = FakeNpm(
+            hosts=[
+                host(["right-only.example"]),
+                host(["shared.example"], forward_host="right-app"),
+            ]
+        )
+
+        result = synchronize_bidirectional(
+            left,
+            right,
+            dry_run=False,
+            sync_certificates=False,
+            sync_access_lists=False,
+            sync_settings=False,
+        )
+
+        left_writes = [call for call in left.calls if call[0] in {"POST", "PUT"}]
+        right_writes = [call for call in right.calls if call[0] in {"POST", "PUT"}]
+        self.assertEqual([call[1] for call in left_writes], ["nginx/proxy-hosts"])
+        self.assertEqual([call[1] for call in right_writes], ["nginx/proxy-hosts"])
+        self.assertTrue(any("left-only.example" in str(call) for call in right_writes))
+        self.assertTrue(any("right-only.example" in str(call) for call in left_writes))
+        self.assertFalse(any(call[0] == "PUT" for call in left_writes + right_writes))
+        self.assertEqual(
+            sum("conflicting changes" in item for item in result.skipped),
+            2,
+        )
+        self.assertFalse(any("left-app" in item or "right-app" in item for item in result.to_dict()["skipped"]))
+
     def test_preview_is_read_only_and_preserves_destination_only(self):
         source = FakeNpm(hosts=[host(["source.example"])])
         destination = FakeNpm(hosts=[host(["destination-only.example"])])

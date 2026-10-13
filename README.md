@@ -64,8 +64,14 @@ To update, pull the latest source and run `docker compose up -d --build`. To sto
 3. Select proxy host, certificate, access-list, certificate-provider, and NPM setting sync options. Access-list sync includes IP allow/deny rules. Let's Encrypt DNS challenge provider IDs and credential configuration are copied with new certificates when enabled.
 4. Click **Preview changes** first. Preview performs reads only. Review planned, unchanged, skipped, and failed entries.
 5. Click **Apply changes** to re-read the current configurations and create or update supported records.
+6. Choose **One way** to copy from the source to the destination, or **Bidirectional** to copy items missing on either instance. Preview bidirectional changes before applying them.
+7. To run unattended, enable recurring sync, choose an interval from 5 minutes to 7 days, and save the schedule. A scheduled run applies changes automatically; the first run starts after the selected interval. Review the latest result on the settings page.
+
+Bidirectional mode creates missing supported records on the opposite instance. If a matching proxy host, IP-only access list, or shared setting differs on both sides, it reports a conflict and leaves that record unchanged on both instances. It does not infer which side was edited more recently. Destination-only records are retained in one-way mode too; deletions are never propagated.
 
 The administrator password is stored only as a salted password hash in the persistent app data volume. NPM passwords and API bearer tokens are not stored or shown in results. Certificate private keys are sent directly from source NPM to destination NPM when the source API returns them; result output does not contain certificate contents.
+
+Manual sync credentials are request-only. If recurring sync is enabled, the source/destination URLs, usernames, and passwords are saved in `/data/schedule.json` so the app can log in unattended. The file and containing data directory are restricted to owner-only permissions (`0600` and `0700`) but the credentials are **not encrypted**; protect the Docker host and volume backups accordingly. The UI never displays those saved passwords. Disable the schedule in the UI to remove the saved config, or remove/protect the volume as a whole. Do not run multiple app replicas against the same schedule volume.
 
 ## Supported scope and limitations
 
@@ -83,7 +89,7 @@ Use NPM accounts with only the permissions required for the sync. API errors are
 
 ## Settings
 
-Each run's URLs, NPM credentials, proxy-host, certificate, access-list, certificate-provider, and settings toggles, and preview/apply action are entered in the web interface. NPM credentials are intentionally not persisted. The admin password hash is stored in the `npm-sync-data` volume so it survives container replacement. Provider credentials from source certificate metadata are sent directly to the destination NPM API, never shown in output or logs; use HTTPS between instances.
+Each manual run's URLs, NPM credentials, proxy-host, certificate, access-list, certificate-provider, and settings toggles, sync direction, and preview/apply action are entered in the web interface. Manual-run NPM credentials are not persisted. Enabling a recurring schedule is an explicit exception: its connection credentials and selected options are saved to `/data/schedule.json` for unattended runs, with owner-only filesystem permissions but without encryption. The admin password hash and schedule are stored in the `npm-sync-data` volume so they survive container replacement. Provider credentials from source certificate metadata are sent directly to the destination NPM API, never shown in output or logs; use HTTPS between instances.
 
 | Variable | Default | Purpose |
 |---|---|---|

@@ -1,4 +1,4 @@
-"""Preview and apply a conservative proxy-host/certificate synchronization."""
+"""Preview and apply conservative NPM configuration synchronization."""
 
 from __future__ import annotations
 
@@ -180,6 +180,7 @@ def synchronize(
     sync_access_lists: bool = True,
     sync_certificate_providers: bool = True,
     sync_settings: bool = True,
+    conflict_on_difference: bool = False,
 ) -> SyncResult:
     result = SyncResult(dry_run=dry_run)
     hosts_src = _read_items(source.get("nginx/proxy-hosts"), "proxy host") if sync_hosts else []
@@ -230,6 +231,11 @@ def synchronize(
                     if _same_payload(current_payload, payload):
                         access_list_map[source_id] = current.get("id")
                         result.unchanged.append(f"Access list {label}: already matches")
+                        continue
+                    if conflict_on_difference:
+                        result.skipped.append(
+                            f"Access list {label}: conflicting changes; preserved on both instances"
+                        )
                         continue
                     result.planned.append(f"Update access list {label}")
                     if dry_run:
@@ -399,6 +405,11 @@ def synchronize(
                 if current_payload == payload:
                     result.unchanged.append(f"Setting {label}: already matches")
                     continue
+                if conflict_on_difference:
+                    result.skipped.append(
+                        f"Setting {label}: conflicting changes; preserved on both instances"
+                    )
+                    continue
                 result.planned.append(f"Update setting {label}")
                 if not dry_run:
                     try:
@@ -492,6 +503,11 @@ def synchronize(
         if _same_payload(current, payload):
             result.unchanged.append(f"Proxy host {label}: already matches")
             continue
+        if conflict_on_difference:
+            result.skipped.append(
+                f"Proxy host {label}: conflicting changes; preserved on both instances"
+            )
+            continue
         result.planned.append(f"Update proxy host {label}")
         if not dry_run:
             destination_id = current.get("id")
@@ -503,4 +519,39 @@ def synchronize(
                 result.completed.append(f"Updated proxy host {label}")
             except NpmApiError as exc:
                 result.errors.append(f"Proxy host {label}: {exc}")
+    return result
+
+
+def synchronize_bidirectional(
+    left: NpmClient,
+    right: NpmClient,
+    *,
+    dry_run: bool = True,
+    sync_hosts: bool = True,
+    sync_certificates: bool = True,
+    sync_access_lists: bool = True,
+    sync_certificate_providers: bool = True,
+    sync_settings: bool = True,
+) -> SyncResult:
+    """Copy missing items in both directions and preserve divergent matches."""
+    result = SyncResult(dry_run=dry_run)
+    options = {
+        "dry_run": dry_run,
+        "sync_hosts": sync_hosts,
+        "sync_certificates": sync_certificates,
+        "sync_access_lists": sync_access_lists,
+        "sync_certificate_providers": sync_certificate_providers,
+        "sync_settings": sync_settings,
+        "conflict_on_difference": True,
+    }
+    for label, source, destination in (
+        ("Left to right", left, right),
+        ("Right to left", right, left),
+    ):
+        direction_result = synchronize(source, destination, **options)
+        for field_name in ("planned", "completed", "unchanged", "skipped", "errors"):
+            entries = getattr(direction_result, field_name)
+            getattr(result, field_name).extend(
+                f"{label}: {entry}" for entry in entries
+            )
     return result
