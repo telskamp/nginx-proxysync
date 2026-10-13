@@ -3,10 +3,12 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     NPM_SYNC_HOST=0.0.0.0 \
-    NPM_SYNC_PORT=8080
+    NPM_SYNC_PORT=8080 \
+    NPM_SYNC_DATA_DIR=/data
 
 WORKDIR /app
 COPY nginx_proxysync ./nginx_proxysync
+RUN mkdir -p /data && chown 10001:10001 /data
 USER 10001:10001
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
