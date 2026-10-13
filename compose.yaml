@@ -1,0 +1,11 @@
+services:
+  nginx-proxy-sync:
+    build: .
+    container_name: nginx-proxy-sync
+    restart: unless-stopped
+    environment:
+      NPM_SYNC_UI_USER: ${NPM_SYNC_UI_USER:?Set NPM_SYNC_UI_USER in .env}
+      NPM_SYNC_UI_PASSWORD: ${NPM_SYNC_UI_PASSWORD:?Set NPM_SYNC_UI_PASSWORD in .env}
+      NPM_SYNC_PORT: 8080
+    ports:
+      - "${NPM_SYNC_BIND_ADDRESS:-127.0.0.1}:8080:8080"
